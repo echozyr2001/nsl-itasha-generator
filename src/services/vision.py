@@ -36,6 +36,7 @@ class AnalysisResult(BaseModel):
     images: List[ImageAnalysis] = Field(description="Analysis for each input image, in the same order as provided")
     synthesis: str = Field(description="A synthesized concept combining elements from all images suitable for a custom handheld console skin design. Suggest how to merge these styles/elements.")
     layout_slots: List[LayoutSlotDescription] = Field(default_factory=list, description="Precise placement plan referencing the device mask using percentage coordinates.")
+    front_back_divider_y: float = Field(default=50.0, description="Y coordinate (0-100) where the front (top) and back (bottom) sections divide. This should be extracted from the mask's visible boundary line. The front section occupies y=0 to this value, back section occupies this value to y=100.")
 
 class VisionService:
     def __init__(self):
@@ -118,6 +119,14 @@ class VisionService:
         When combining references, plan a single cohesive palette and lighting treatment. Describe seam transitions and blending strategies for where controller halves meet and where front/back surfaces connect.
         Treat the printable mask as law: the goal is to concentrate focal characters entirely inside the white regions (both left/right grips on the front, full expanse on the back), while using the grey zones only for soft background carryover.
         The top half of the canvas is the FRONT face and must carry the primary composition stretching to the far left/right corners; the bottom half is the BACK panel and can host secondary motifs or emblems.
+        
+        CRITICAL FOR MULTIPLE IMAGES: If multiple reference images are provided, you must create a unified composition that:
+        1. Extracts distinct elements from each image (characters, props, backgrounds, logos, text) and assigns them to specific layout slots
+        2. Maintains visual consistency across all elements (same character should look identical across all instances)
+        3. Creates a cohesive color palette that works across all extracted elements
+        4. Distributes elements strategically: use layout_slots to place characters from different reference images in different positions (e.g., one character on front-left, another on front-right, a third on the back)
+        5. If a reference image contains multiple characters or elements, you may use different elements from the same image in different slots
+        6. The synthesis field should explicitly describe how elements from each reference image will be combined and where they will be placed
 
         You MUST return JSON strictly following this schema:
         {
@@ -140,7 +149,8 @@ class VisionService:
               "position": { "x": [minPercent, maxPercent], "y": [minPercent, maxPercent] },
               "avoid": "Describe the mask / hardware areas that must remain empty for this slot"
             }
-          ]
+          ],
+          "front_back_divider_y": 52.5
         }
 
         Requirements:
@@ -150,6 +160,8 @@ class VisionService:
         - Call out explicit slots (or background treatments) that cover the front-left and front-right corners so they never appear blank.
         - Mention color or lighting gradients needed to hide seams between slots.
         - Use the provided image order: slot.source_images should reference the 1-based index of the inspiration image.
+        - CRITICAL: Analyze the mask image carefully. Identify the horizontal divider line that separates the front (top) section from the back (bottom) section. This divider is typically visible as a clear boundary or gap in the mask. Measure its Y coordinate as a percentage (0-100) and set "front_back_divider_y" to this exact value. The front section occupies y=0 to front_back_divider_y, and the back section occupies front_back_divider_y to y=100. This divider position is crucial for aligning the generated texture's composition split.
+        - FOR MULTIPLE IMAGES: Create enough layout_slots to utilize elements from ALL reference images. Each major element (character, prop, logo) from each reference image should have at least one dedicated slot. The synthesis field must explicitly state: "From Image 1, extract [elements] and place them in [slots]. From Image 2, extract [elements] and place them in [slots]." This ensures the generation model knows exactly which elements come from which reference image.
         """
 
         contents = [prompt]
