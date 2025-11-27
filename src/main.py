@@ -1,7 +1,6 @@
 import os
 import sys
 import argparse
-import json
 from dotenv import load_dotenv
 from src.services.vision import VisionService
 from src.services.generation import GenerationService
@@ -13,7 +12,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".
 def main():
     parser = argparse.ArgumentParser(description="Nintendo Switch Lite Itasha Generator")
     parser.add_argument("image_paths", nargs='+', help="Path(s) to the input image(s) (element/style reference)")
-    parser.add_argument("--output", default="assets/output/result.png", help="Path to save the final result")
+    parser.add_argument("--output", default="assets/output/result.png", help="Path to save the generated base texture (no mask applied)")
+    parser.add_argument("--preview-output", help="Optional path to save a preview with the Switch Lite mask applied")
     
     args = parser.parse_args()
     
@@ -50,27 +50,25 @@ def main():
         print(f"Error during analysis: {e}")
         return
 
-    print(f"--- Step 2: Generating Design Prompt ---")
-    try:
-        design_prompt = generator.generate_design_prompt(analysis_result)
-        print(f"Generated Prompt:\n{design_prompt}")
-    except Exception as e:
-        print(f"Error during prompt generation: {e}")
-        return
-
-    print(f"--- Step 3: Generating Image (Texture) ---")
+    print(f"--- Step 2: Generating Image (Texture) ---")
     # Intermediate file
     temp_output = "assets/output/temp_gen.png"
-    os.makedirs("assets/output", exist_ok=True)
+    os.makedirs(os.path.dirname(args.output), exist_ok=True)
     
-    result_path = generator.generate_image(design_prompt, temp_output)
+    # Pass analysis result and images directly to the image generator
+    base_texture_path = generator.generate_image(analysis_result, valid_paths, args.output)
     
-    if result_path:
-        print(f"--- Step 4: Applying Template Overlay ---")
-        overlay_template(result_path, args.output)
-        print(f"Success! Final design saved to {args.output}")
-    else:
+    if not base_texture_path:
         print("Failed to generate image.")
+        return
+    
+    print(f"Base texture saved to {args.output}")
+    
+    if args.preview_output:
+        os.makedirs(os.path.dirname(args.preview_output), exist_ok=True)
+        print(f"--- Optional Preview: Applying Template Overlay ---")
+        overlay_template(base_texture_path, args.preview_output)
+        print(f"Preview with mask saved to {args.preview_output}")
 
 if __name__ == "__main__":
     main()

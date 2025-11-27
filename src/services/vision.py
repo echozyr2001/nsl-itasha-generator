@@ -6,6 +6,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+from google.oauth2 import service_account
 
 load_dotenv()
 
@@ -16,16 +17,65 @@ class ImageAnalysis(BaseModel):
     colors: List[str] = Field(description="Dominant color palette (hex codes or names)")
     mood: str = Field(description="Overall mood or atmosphere")
 
+
+class PositionRange(BaseModel):
+    x: List[float] = Field(description="Two-value list [min%, max%] for horizontal placement (0-100 scale)")
+    y: List[float] = Field(description="Two-value list [min%, max%] for vertical placement (0-100 scale)")
+
+
+class LayoutSlotDescription(BaseModel):
+    slot_name: str = Field(description="Readable identifier for the slot")
+    source_images: List[int] = Field(description="Indices (1-based) of reference images driving this slot")
+    description: str = Field(description="What goes here (subjects, props, motifs)")
+    purpose: str = Field(description="Why this slot exists / compositional intent")
+    position: PositionRange
+    avoid: str = Field(description="Hardware regions to avoid within this slot (screen, buttons, vents)")
+
+
 class AnalysisResult(BaseModel):
     images: List[ImageAnalysis] = Field(description="Analysis for each input image, in the same order as provided")
-    synthesis: str = Field(description="A synthesized concept combining elements from all images suitable for a Nintendo Switch Lite skin design. Suggest how to merge these styles/elements.")
+    synthesis: str = Field(description="A synthesized concept combining elements from all images suitable for a custom handheld console skin design. Suggest how to merge these styles/elements.")
+    layout_slots: List[LayoutSlotDescription] = Field(default_factory=list, description="Precise placement plan referencing the device mask using percentage coordinates.")
 
 class VisionService:
     def __init__(self):
-        self.api_key = os.getenv("GOOGLE_API_KEY")
-        if not self.api_key:
-            raise ValueError("GOOGLE_API_KEY not found in environment variables")
-        self.client = genai.Client(api_key=self.api_key)
+        # Load credentials from account.json
+        service_account_file = "account.json"
+        if not os.path.exists(service_account_file):
+             # Fallback to env var if file not found, though user said they use account.json
+            self.api_key = os.getenv("GOOGLE_API_KEY")
+            if not self.api_key:
+                raise ValueError(f"Service account file '{service_account_file}' not found and GOOGLE_API_KEY not set.")
+            self.client = genai.Client(api_key=self.api_key)
+        else:
+            # Use vertexai and service account
+            # The google-genai SDK supports vertexai backend.
+            # We need to configure the client for Vertex AI.
+            # Typically this involves project and location, and credentials.
+            
+            # Read project_id from account.json
+            with open(service_account_file, 'r') as f:
+                info = json.load(f)
+                self.project_id = info.get("project_id")
+
+            self.location = "global" # Changed from us-central1 per user request
+            
+            # Define scopes explicitly
+            scopes = ['https://www.googleapis.com/auth/cloud-platform']
+            
+            credentials = service_account.Credentials.from_service_account_file(
+                service_account_file, 
+                scopes=scopes
+            )
+            
+            self.client = genai.Client(
+                vertexai=True,
+                project=self.project_id,
+                location=self.location,
+                credentials=credentials
+            )
+
+
         # User requested gemini-2.5-flash
         self.model = "gemini-2.5-flash" 
 
@@ -47,22 +97,64 @@ class VisionService:
         if not images:
             raise ValueError("No valid images loaded")
 
-        prompt = """
-        You are an expert visual designer for "Itasha" (decorated vehicle/device) art.
-        Analyze the provided image(s) to create a design for a Nintendo Switch Lite skin.
-        
-        For each image, provide:
-        1. A detailed visual description.
-        2. Key elements (characters, objects).
-        3. Art style.
-        4. Color palette.
-        5. Mood.
+        mask_path = os.path.join("assets", "cover.png")
+        mask_image = None
+        if os.path.exists(mask_path):
+            try:
+                mask_image = Image.open(mask_path)
+            except Exception as mask_err:
+                print(f"Warning: failed to load mask {mask_path}: {mask_err}")
 
-        Then, provide a 'synthesis' that suggests how to combine these elements into a single cohesive design concept for the Switch Lite.
-        The Switch Lite has a roughly 2:1 aspect ratio.
+        prompt = """
+        You are an expert layout planner for custom handheld console skins.
+        After this text you will receive (optionally) the printable device mask (white = printable, grey = cut out), 
+        followed by N reference images in the exact order supplied by the user.
+
+        Behave like a meticulous data labeler:
+        - For each reference image, exhaustively list identifiable characters, outfits, props, logos, patterns, lighting, and stylistic motifs.
+        - Capture distinguishing traits (hair, clothing colors, accessories, poses, expressions) so a synthesis model can faithfully recreate them.
+        - Identify background textures, gradients, effects, and any typography.
+
+        When combining references, plan a single cohesive palette and lighting treatment. Describe seam transitions and blending strategies for where controller halves meet and where front/back surfaces connect.
+        Treat the printable mask as law: the goal is to concentrate focal characters entirely inside the white regions (both left/right grips on the front, full expanse on the back), while using the grey zones only for soft background carryover.
+        The top half of the canvas is the FRONT face and must carry the primary composition stretching to the far left/right corners; the bottom half is the BACK panel and can host secondary motifs or emblems.
+
+        You MUST return JSON strictly following this schema:
+        {
+          "images": [
+            {
+              "description": "...",
+              "elements": ["..."],
+              "style": "...",
+              "colors": ["..."],
+              "mood": "..."
+            }
+          ],
+          "synthesis": "...",
+          "layout_slots": [
+            {
+              "slot_name": "...",
+              "source_images": [1,2],
+              "description": "...",
+              "purpose": "...",
+              "position": { "x": [minPercent, maxPercent], "y": [minPercent, maxPercent] },
+              "avoid": "Describe the mask / hardware areas that must remain empty for this slot"
+            }
+          ]
+        }
+
+        Requirements:
+        - Percentages reference the full 1:1 canvas (0,0 top-left, 100,100 bottom-right). Always cross-check the mask and keep key subjects outside grey (cut-out) regions.
+        - Express coordinates as ranges with at least 5% precision (e.g., x:[5,22], y:[60,85]). Avoid vague terms like "left" or "bottom" without numeric bounds.
+        - layout_slots must describe both front (top half) and back (bottom half) placements with precise coords. Ensure every major character, logo, or emblem sits wholly inside a white mask region, and dedicate additional slots to fill remaining white space (especially the large front corners and the expansive back panel) with meaningful artwork.
+        - Call out explicit slots (or background treatments) that cover the front-left and front-right corners so they never appear blank.
+        - Mention color or lighting gradients needed to hide seams between slots.
+        - Use the provided image order: slot.source_images should reference the 1-based index of the inspiration image.
         """
-        
+
         contents = [prompt]
+        if mask_image:
+            contents.append(mask_image)
         contents.extend(images)
 
         try:
@@ -80,8 +172,4 @@ class VisionService:
 
         except Exception as e:
             print(f"Warning: Vision model {self.model} failed ({e}). Trying fallback...")
-            # Fallback without schema if necessary, or just re-raise for now as we want structured data.
-            # For simplicity in this demo, let's try one more time with a looser instruction if strict schema fails?
-            # Or just return raw text wrapped in a basic structure if it fails totally?
-            # Let's assume it works or raise.
             raise e
