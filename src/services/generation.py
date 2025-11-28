@@ -14,41 +14,44 @@ from src.services.vision import AnalysisResult
 load_dotenv()
 
 class GenerationService:
-    def __init__(self):
+    def __init__(self, *, enable_client: bool = True):
         # Load credentials from account.json
         service_account_file = "account.json"
-        if not os.path.exists(service_account_file):
-            # Fallback to env var if file not found
-            self.api_key = os.getenv("GOOGLE_API_KEY")
-            if not self.api_key:
-                raise ValueError(
-                    f"Service account file '{service_account_file}' not found and GOOGLE_API_KEY not set."
+        self.client = None
+        self.project_id = None
+        self.location = None
+
+        if enable_client:
+            if not os.path.exists(service_account_file):
+                # Fallback to env var if file not found
+                self.api_key = os.getenv("GOOGLE_API_KEY")
+                if not self.api_key:
+                    raise ValueError(
+                        f"Service account file '{service_account_file}' not found and GOOGLE_API_KEY not set."
+                    )
+                self.client = genai.Client(api_key=self.api_key)
+            else:
+                # Use vertexai and service account
+                with open(service_account_file, 'r') as f:
+                    info = json.load(f)
+                    self.project_id = info.get("project_id")
+
+                self.location = "global"  # Changed from us-central1 per user request
+
+                # Define scopes explicitly
+                scopes = ['https://www.googleapis.com/auth/cloud-platform']
+
+                credentials = service_account.Credentials.from_service_account_file(
+                    service_account_file,
+                    scopes=scopes
                 )
-            self.client = genai.Client(api_key=self.api_key)
-            self.project_id = None
-            self.location = None
-        else:
-            # Use vertexai and service account
-            with open(service_account_file, 'r') as f:
-                info = json.load(f)
-                self.project_id = info.get("project_id")
 
-            self.location = "global"  # Changed from us-central1 per user request
-
-            # Define scopes explicitly
-            scopes = ['https://www.googleapis.com/auth/cloud-platform']
-
-            credentials = service_account.Credentials.from_service_account_file(
-                service_account_file,
-                scopes=scopes
-            )
-
-            self.client = genai.Client(
-                vertexai=True,
-                project=self.project_id,
-                location=self.location,
-                credentials=credentials
-            )
+                self.client = genai.Client(
+                    vertexai=True,
+                    project=self.project_id,
+                    location=self.location,
+                    credentials=credentials
+                )
 
         # Path to the console template mask used to guide compositions
         self.template_mask_path = "assets/cover.png"
@@ -112,9 +115,14 @@ class GenerationService:
 
     def _example_reference_parts(self) -> list:
         parts = []
-        parts.append(types.Part.from_text(
-            text="REFERENCE OUTPUT EXAMPLES (pre-mask textures only): ref/1-b.JPG, ref/2-b.JPG, ref/3-b.JPG, ref/4-b.JPG, ref/5-b.JPG, ref/6-b.JPG, ref/7-b.JPG, ref/8-b.JPG, ref/9-b.JPG."
-        ))
+        exemplar_lines = [
+            "REFERENCE OUTPUT EXAMPLES (pre-mask textures only):"
+        ]
+        for idx in range(1, 10):
+            exemplar_lines.append(
+                f"  - Example {idx}: ref/{idx}-b.JPG (flat texture before mask)."
+            )
+        parts.append(types.Part.from_text(text="\n".join(exemplar_lines)))
 
         for idx, (texture_path, preview_path, note) in enumerate(self.example_pairs, start=1):
             if not os.path.exists(texture_path):
@@ -177,8 +185,10 @@ class GenerationService:
                 text="REFERENCE FIDELITY RULES: You are not inventing new characters. "
                 "Treat the supplied references as mandatory key art that must be rotoscoped into the final layout. "
                 "Hair color, face shape, outfit silhouettes, weapons, decals, and lighting accents must match the reference pixel-for-pixel (minor pose tweaks only to fit the slot). "
-                "If a reference shows a twin-tailed girl with a specific rifle, that exact girl and rifle must appear—do NOT replace them with a "
-                "\"similar\" design or generic interpretation."
+                "If a reference shows a specific silhouette or prop, that exact element must appear—do NOT replace it with a \"similar\" design or generic interpretation."
+            ),
+            types.Part.from_text(
+                text="Orientation lock: Never flip, mirror, or rotate a reference character relative to its original gravitational cue. Preserve hair/garment flow so poses stay believable."
             ),
             types.Part.from_text(
                 text="The final art must look like the provided TARGET OUTPUT examples (2-b.JPG and 8-b.JPG): a continuous illustration across a 1:1 canvas with no hardware outlines, faux shadows, or transparent voids."
@@ -188,10 +198,13 @@ class GenerationService:
                 "If a slot reserves x:[10,25], y:[60,82], ensure the subject fully occupies that rectangle."
             ),
             types.Part.from_text(
-                text="Front (top) design guidance: concentrate the rifle barrel and torsos along the left and right grips, keep the center screen band mostly background glow so the user's cutout will not remove faces or weapons."
+                text="Front (top) design guidance: follow the layout slot plan to place focal characters toward the left/right grip zones, keep the center screen band mostly background glow so the user's cutout will not remove faces or weapons."
             ),
             types.Part.from_text(
                 text="The mask's white regions are the only areas that survive after fabrication. Concentrate characters, emblems, and important motifs fully inside those coordinates. Use grey-zone areas solely for low-contrast background gradients that can be safely trimmed away."
+            ),
+            types.Part.from_text(
+                text="Back (bottom) design guidance: use the layout slots to feature the dominant subject(s) for the lower half spanning y≈57-97%. Keep them whole and readable, layered over the thematic background, so the user sees a complete composition when the mask is applied."
             ),
             types.Part.from_text(
                 text="Do NOT hint at the mask outline: avoid blurred borders, ghosted rectangles, semi-transparent overlays, or softened screen silhouettes. Keep color and detail consistent across cut-line boundaries so the texture looks pristine before masking."
