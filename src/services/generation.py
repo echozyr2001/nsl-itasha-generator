@@ -14,14 +14,20 @@ from src.services.vision import AnalysisResult
 load_dotenv()
 
 class GenerationService:
-    def __init__(self, *, enable_client: bool = True):
-        # Load credentials from account.json
-        service_account_file = "account.json"
+    def __init__(self, enable_client: bool = True):
+        """
+        Initialize GenerationService.
+        
+        Args:
+            enable_client: If False, skip client initialization (useful for prompt optimization only).
+        """
         self.client = None
         self.project_id = None
         self.location = None
-
+        
         if enable_client:
+            # Load credentials from account.json
+            service_account_file = "account.json"
             if not os.path.exists(service_account_file):
                 # Fallback to env var if file not found
                 self.api_key = os.getenv("GOOGLE_API_KEY")
@@ -30,6 +36,8 @@ class GenerationService:
                         f"Service account file '{service_account_file}' not found and GOOGLE_API_KEY not set."
                     )
                 self.client = genai.Client(api_key=self.api_key)
+                self.project_id = None
+                self.location = None
             else:
                 # Use vertexai and service account
                 with open(service_account_file, 'r') as f:
@@ -115,22 +123,16 @@ class GenerationService:
 
     def _example_reference_parts(self) -> list:
         parts = []
-        exemplar_lines = [
-            "REFERENCE OUTPUT EXAMPLES (pre-mask textures only):"
-        ]
-        for idx in range(1, 10):
-            exemplar_lines.append(
-                f"  - Example {idx}: ref/{idx}-b.JPG (flat texture before mask)."
-            )
-        parts.append(types.Part.from_text(text="\n".join(exemplar_lines)))
+        parts.append(types.Part.from_text(
+            text="IMPORTANT: Synthesize a new 2D illustration; do not paste or collage the reference textures."
+        ))
 
         for idx, (texture_path, preview_path, note) in enumerate(self.example_pairs, start=1):
             if not os.path.exists(texture_path):
                 continue
             parts.append(types.Part.from_text(
                 text=(
-                    f"Example Pair {idx}: '{texture_path}' is the TARGET printable vinyl texture (what you must create). "
-                    "Study how it reuses reference art directly."
+                    f"Example Pair {idx}: '{texture_path}' is the TARGET printable vinyl texture (what you must create)."
                 )
             ))
             parts.append(types.Part.from_text(
@@ -165,30 +167,14 @@ class GenerationService:
 
         parts = [
             types.Part.from_text(
-                text="You are generating the RAW printable vinyl texture (same deliverable as ref/1-b.JPG ... ref/9-b.JPG). "
-                "Return a full-color square artwork only—no mask overlay, no grey filler, and no hardware silhouettes."
+                text="You are generating a base texture for a custom skin texture. "
+                "This image must remain unmasked; the user will later overlay the provided mask to cut out screen/buttons. "
+                "Do NOT paint guides, button icons, circular placeholders, or transparent holes. Treat the surface as a full canvas."
             ),
             types.Part.from_text(
                 text="Render only a flat, front-facing printable vinyl sheet. "
-                "Keep the viewpoint orthographic (straight-on) with no perspective, bevels, shadows, lighting cues, plastic edges, logos, or button labels."
-            ),
-            types.Part.from_text(
-                text="Maintain a HARD SEPARATION between the front (top) and back (bottom) halves. "
-                "All characters and focal motifs assigned to the front MUST stay entirely above the divider line; "
-                "subjects dedicated to the back must stay entirely below it. "
-                "Allow only background gradients to cross the split so the two halves do not bleed into each other."
-            ),
-            types.Part.from_text(
-                text="Use the mask only for proportions. Top/front white band spans roughly y:3-54%, bottom/back spans y:57-97%—match this ratio."
-            ),
-            types.Part.from_text(
-                text="REFERENCE FIDELITY RULES: You are not inventing new characters. "
-                "Treat the supplied references as mandatory key art that must be rotoscoped into the final layout. "
-                "Hair color, face shape, outfit silhouettes, weapons, decals, and lighting accents must match the reference pixel-for-pixel (minor pose tweaks only to fit the slot). "
-                "If a reference shows a specific silhouette or prop, that exact element must appear—do NOT replace it with a \"similar\" design or generic interpretation."
-            ),
-            types.Part.from_text(
-                text="Orientation lock: Never flip, mirror, or rotate a reference character relative to its original gravitational cue. Preserve hair/garment flow so poses stay believable."
+                "Keep the viewpoint orthographic (straight-on) with no perspective, bevels, shadows, or lighting cues that imply hardware depth. "
+                "Never depict the handheld console device, plastic edges, controllers, or any physical hardware body—only the 2D artwork that will be printed."
             ),
             types.Part.from_text(
                 text="The final art must look like the provided TARGET OUTPUT examples (2-b.JPG and 8-b.JPG): a continuous illustration across a 1:1 canvas with no hardware outlines, faux shadows, or transparent voids."
@@ -198,38 +184,24 @@ class GenerationService:
                 "If a slot reserves x:[10,25], y:[60,82], ensure the subject fully occupies that rectangle."
             ),
             types.Part.from_text(
-                text="Front (top) design guidance: follow the layout slot plan to place focal characters toward the left/right grip zones, keep the center screen band mostly background glow so the user's cutout will not remove faces or weapons."
-            ),
-            types.Part.from_text(
                 text="The mask's white regions are the only areas that survive after fabrication. Concentrate characters, emblems, and important motifs fully inside those coordinates. Use grey-zone areas solely for low-contrast background gradients that can be safely trimmed away."
-            ),
-            types.Part.from_text(
-                text="Back (bottom) design guidance: use the layout slots to feature the dominant subject(s) for the lower half spanning y≈57-97%. Keep them whole and readable, layered over the thematic background, so the user sees a complete composition when the mask is applied."
             ),
             types.Part.from_text(
                 text="Do NOT hint at the mask outline: avoid blurred borders, ghosted rectangles, semi-transparent overlays, or softened screen silhouettes. Keep color and detail consistent across cut-line boundaries so the texture looks pristine before masking."
             ),
             types.Part.from_text(
-                text="Top-half focal avoidance: keep the center window (x=25-75, y=18-50) to gradients/energy, never place faces there. Use the corners at x<20 and x>80 for the major guns/heads as shown in the layout slots."
-            ),
-            types.Part.from_text(
-                text=f"CRITICAL DIVIDER ALIGNMENT: The mask's front/back split is NOT at 50%. "
-                f"Use y={analysis_result.front_back_divider_y}% as the exact divider (front ≈ y:0-{analysis_result.front_back_divider_y}, back ≈ y:{analysis_result.front_back_divider_y}-100). "
-                "Treat the top band as slimmer and the bottom as deeper; proportion the artwork just like ref/2-b.JPG."
+                text=f"CRITICAL DIVIDER ALIGNMENT: The front (top) and back (bottom) sections are divided at y={analysis_result.front_back_divider_y}% (not at 50%). "
+                f"The front section occupies y=0% to y={analysis_result.front_back_divider_y}%, and the back section occupies y={analysis_result.front_back_divider_y}% to y=100%. "
+                f"You MUST align your composition split exactly at this y={analysis_result.front_back_divider_y}% coordinate. "
+                f"The front section should appear busier and more character-rich than the back section. Extend design elements all the way into the front-left and front-right corners so no blank wedges remain."
             ),
             types.Part.from_text(
                 text="Forbidden zones: Top-front screen area (x=25%-75%, y=18%-50%) and controller holes must contain only background gradients. Keep all faces and focal elements outside those bounds."
             ),
-            types.Part.from_text(
-                text="Screen avoidance rule: in the front half, keep the central rectangle (x=25-75, y=18-50) mostly background so the user can punch out the screen without losing character faces or weapons."
-            ),
-            types.Part.from_text(
-                text="Mask context only: the provided mask image is for measuring coordinates. Do NOT copy its greys, do NOT embed transparent windows, and do NOT show outlines of buttons or vents."
-            ),
             types.Part.from_text(text="\n".join(layout_lines)),
             types.Part.from_text(text=self._analysis_summary_text(analysis_result)),
         ]
-
+        
         # Add explicit multi-image combination guidance
         if len(reference_images) > 1:
             parts.append(types.Part.from_text(
@@ -241,26 +213,14 @@ class GenerationService:
                 f"2. Extract ONLY the elements described in that slot's 'Content' field from the specified reference image(s). "
                 f"3. Place those elements at the exact coordinates given in the slot's 'Position' field. "
                 f"4. Maintain visual consistency: if the same character appears in multiple slots, ensure it looks identical across all instances. "
-                f"5. DO NOT simply copy one reference image or blend them randomly—create a unified composition by following the layout plan exactly. "
-                f"6. You are required to literally reuse the referenced elements (copy the character, clothing, weapons, facial expression). Text-only reinterpretations are forbidden."
+                f"5. DO NOT simply copy one reference image or blend them randomly—create a unified composition by following the layout plan exactly."
             ))
-
-        identity_lines = [
-            "REFERENCE IDENTITY LOCK (replicate these traits exactly; reuse the literal characters/weapons from the photos)."
-        ]
-        for idx, img_info in enumerate(analysis_result.images):
-            elements = ", ".join(img_info.elements)
-            colors = ", ".join(img_info.colors)
-            identity_lines.append(
-                f"Image {idx+1}: {img_info.description}. Preserve elements [{elements}] with palette [{colors}] and mood '{img_info.mood}'."
-            )
-        parts.append(types.Part.from_text(text="\n".join(identity_lines)))
 
         # Attach template mask to give spatial context
         if self.template_mask_path:
             parts.append(types.Part.from_text(
-                text="Template mask placement aid ONLY: white = survives after cutting, grey = removed. "
-                "Do NOT reproduce the mask graphic itself or its flat grey background—return a full-color printable texture instead."
+                text="Template mask placement aid ONLY: white = survives after cutting, grey = will be removed. "
+                "Use it solely to position characters and patterns. Do not copy its shapes, colors, or transparency into the final artwork."
             ))
             try:
                 parts.append(self._image_part_from_path(self.template_mask_path))
@@ -315,7 +275,7 @@ class GenerationService:
             parts.append(img_part)
 
         parts.append(types.Part.from_text(
-            text="REMINDER: Output a clean, guide-free base texture. Do not overlay the mask yourself, and do not leave any grey canvas."
+            text="REMINDER: Output a clean, guide-free base texture. Do not overlay the mask yourself."
         ))
         parts.append(types.Part.from_text(
             text="Final deliverable must be a seamless 1:1 canvas with zero transparent pixels and no visible hardware edges—only artwork ready for printing."

@@ -33,10 +33,10 @@
     uv run main.py assets/input/character.jpg assets/input/style_ref.png
     ```
     或者：
-    ```bash
+```bash
     source .venv/bin/activate
     python main.py assets/input/character.jpg
-    ```
+```
 
 3.  生成结果将保存在 `assets/output/` 目录下。
 
