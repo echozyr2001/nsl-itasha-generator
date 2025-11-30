@@ -25,10 +25,19 @@ GEPA optimizes the prompts used for image generation by:
    uv sync
    ```
 
-2. Configure environment variables (`.env`):
+2. Configure authentication (choose one):
+   
+   **Option A: Vertex AI with service account (recommended for Vertex AI users)**
+   - Place `account.json` service account file in project root
+   - The configuration will automatically use Vertex AI authentication
+   
+   **Option B: Google API Key**
    ```env
    GOOGLE_API_KEY=your_key_here
-   # or
+   ```
+   
+   **Option C: OpenAI API Key (fallback)**
+   ```env
    OPENAI_API_KEY=your_key_here
    ```
 
