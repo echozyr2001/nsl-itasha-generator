@@ -40,7 +40,8 @@ def configure_dspy():
             try:
                 # Try using Vertex AI model format
                 # Note: Vertex AI model names may differ from standard Gemini API
-                lm = dspy.LM(model="gemini/gemini-2.0-flash-exp")
+                # Use vertex_ai/ prefix to ensure litellm uses Vertex AI provider
+                lm = dspy.LM(model="vertex_ai/gemini-2.0-flash-exp")
                 dspy.configure(lm=lm)
                 print(f"DSPy configured with Vertex AI (project: {project_id}, location: {location})")
                 return lm
@@ -54,7 +55,7 @@ def configure_dspy():
                 # The environment variables should be enough for most cases
                 # Try again with a simpler model name or default
                 try:
-                    lm = dspy.LM(model="gemini/gemini-2.0-flash-exp")
+                    lm = dspy.LM(model="vertex_ai/gemini-2.0-flash-exp")
                     dspy.configure(lm=lm)
                     print("DSPy configured with Vertex AI (retry successful)")
                     return lm

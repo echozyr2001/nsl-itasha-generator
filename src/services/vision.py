@@ -29,14 +29,14 @@ class LayoutSlotDescription(BaseModel):
     description: str = Field(description="What goes here (subjects, props, motifs)")
     purpose: str = Field(description="Why this slot exists / compositional intent")
     position: PositionRange
-    avoid: str = Field(description="Hardware regions to avoid within this slot (screen, buttons, vents)")
+    avoid: str = Field(description="Mask regions to avoid within this slot (grey zones, central area)")
 
 
 class AnalysisResult(BaseModel):
     images: List[ImageAnalysis] = Field(description="Analysis for each input image, in the same order as provided")
-    synthesis: str = Field(description="A synthesized concept combining elements from all images suitable for a custom handheld console skin design. Suggest how to merge these styles/elements.")
-    layout_slots: List[LayoutSlotDescription] = Field(default_factory=list, description="Precise placement plan referencing the device mask using percentage coordinates.")
-    front_back_divider_y: float = Field(default=50.0, description="Y coordinate (0-100) where the front (top) and back (bottom) sections divide. This should be extracted from the mask's visible boundary line. The front section occupies y=0 to this value, back section occupies this value to y=100.")
+    synthesis: str = Field(description="A composition strategy. Do NOT suggest creating new styles. Explain how to arrange the EXISTING elements from the reference images into the mask's white zones.")
+    layout_slots: List[LayoutSlotDescription] = Field(default_factory=list, description="Precise placement plan referencing the mask using percentage coordinates.")
+    front_back_divider_y: float = Field(default=50.0, description="Y coordinate (0-100) where the top and bottom sections divide. This should be extracted from the mask's visible boundary line. The top section occupies y=0 to this value, bottom section occupies this value to y=100.")
 
 class VisionService:
     def __init__(self):
@@ -80,7 +80,7 @@ class VisionService:
         # User requested gemini-2.5-flash
         self.model = "gemini-2.5-flash" 
 
-    def analyze_image(self, image_paths: Union[str, List[str]]) -> AnalysisResult:
+    def analyze_image(self, image_paths: Union[str, List[str]], mask_path: str = None) -> AnalysisResult:
         """
         Analyzes the input image(s) and returns a structured JSON response.
         """
@@ -98,70 +98,62 @@ class VisionService:
         if not images:
             raise ValueError("No valid images loaded")
 
-        mask_path = os.path.join("assets", "cover.png")
         mask_image = None
-        if os.path.exists(mask_path):
+        if mask_path and os.path.exists(mask_path):
             try:
                 mask_image = Image.open(mask_path)
             except Exception as mask_err:
                 print(f"Warning: failed to load mask {mask_path}: {mask_err}")
+        elif not mask_path:
+             # Fallback to default if not provided
+             default_mask = os.path.join("assets", "cover.png")
+             if os.path.exists(default_mask):
+                 try:
+                     mask_image = Image.open(default_mask)
+                 except: pass
 
         prompt = """
-        You are an expert layout planner for custom handheld console skins.
-        After this text you will receive (optionally) the printable device mask (white = printable, grey = cut out), 
+        You are an expert layout planner for custom rectangular skins.
+        After this text you will receive (optionally) the printable mask (white = printable, grey = cut out), 
         followed by N reference images in the exact order supplied by the user.
 
-        Behave like a meticulous data labeler:
-        - For each reference image, exhaustively list identifiable characters, outfits, props, logos, patterns, lighting, and stylistic motifs.
-        - Capture distinguishing traits (hair, clothing colors, accessories, poses, expressions) so a synthesis model can faithfully recreate them.
-        - Identify background textures, gradients, effects, and any typography.
+        TASK:
+        1. Analyze the Reference Images to identify the MAIN SUBJECTS (characters, faces).
+        2. Analyze the Mask to identify the WHITE ZONES (Safe Areas).
+        3. Create a Layout Plan that maps each Subject to a specific White Zone.
 
-        When combining references, plan a single cohesive palette and lighting treatment. Describe seam transitions and blending strategies for where controller halves meet and where front/back surfaces connect.
-        Treat the printable mask as law: the goal is to concentrate focal characters entirely inside the white regions (both left/right grips on the front, full expanse on the back), while using the grey zones only for soft background carryover.
-        The top half of the canvas is the FRONT face and must carry the primary composition stretching to the far left/right corners; the bottom half is the BACK panel and can host secondary motifs or emblems.
-        
-        CRITICAL FOR MULTIPLE IMAGES: If multiple reference images are provided, you must create a unified composition that:
-        1. Extracts distinct elements from each image (characters, props, backgrounds, logos, text) and assigns them to specific layout slots
-        2. Maintains visual consistency across all elements (same character should look identical across all instances)
-        3. Creates a cohesive color palette that works across all extracted elements
-        4. Distributes elements strategically: use layout_slots to place characters from different reference images in different positions (e.g., one character on front-left, another on front-right, a third on the back)
-        5. If a reference image contains multiple characters or elements, you may use different elements from the same image in different slots
-        6. The synthesis field should explicitly describe how elements from each reference image will be combined and where they will be placed
+        LAYOUT RULES:
+        - The Mask has a Top Half (Front) and a Bottom Half (Back).
+        - Top Half: Usually has two side zones (Left Grip, Right Grip). Place primary characters here.
+        - Bottom Half: Usually one large zone. Place secondary characters or large emblems here.
+        - AVOID: Do not place faces in the Grey Zones or the center of the Top Half (often a screen cutout).
 
-        You MUST return JSON strictly following this schema:
+        OUTPUT JSON:
         {
           "images": [
             {
-              "description": "...",
-              "elements": ["..."],
-              "style": "...",
-              "colors": ["..."],
-              "mood": "..."
+              "description": "Brief description of the subject.",
+              "elements": ["Key features to preserve"],
+              "style": "Art style",
+              "colors": ["Dominant colors"],
+              "mood": "Mood"
             }
           ],
-          "synthesis": "...",
+          "synthesis": "Plan: Place Subject 1 on Front-Left, Subject 2 on Front-Right...",
           "layout_slots": [
             {
-              "slot_name": "...",
-              "source_images": [1,2],
-              "description": "...",
-              "purpose": "...",
-              "position": { "x": [minPercent, maxPercent], "y": [minPercent, maxPercent] },
-              "avoid": "Describe the mask / hardware areas that must remain empty for this slot"
+              "slot_name": "Front-Left Zone",
+              "source_images": [1],
+              "description": "The main character from Image 1",
+              "purpose": "Primary focal point",
+              "position": { "x": [0, 45], "y": [0, 52] },
+              "avoid": "Center screen area"
             }
           ],
           "front_back_divider_y": 52.5
         }
-
-        Requirements:
-        - Percentages reference the full 1:1 canvas (0,0 top-left, 100,100 bottom-right). Always cross-check the mask and keep key subjects outside grey (cut-out) regions.
-        - Express coordinates as ranges with at least 5% precision (e.g., x:[5,22], y:[60,85]). Avoid vague terms like "left" or "bottom" without numeric bounds.
-        - layout_slots must describe both front (top half) and back (bottom half) placements with precise coords. Ensure every major character, logo, or emblem sits wholly inside a white mask region, and dedicate additional slots to fill remaining white space (especially the large front corners and the expansive back panel) with meaningful artwork.
-        - Call out explicit slots (or background treatments) that cover the front-left and front-right corners so they never appear blank.
-        - Mention color or lighting gradients needed to hide seams between slots.
-        - Use the provided image order: slot.source_images should reference the 1-based index of the inspiration image.
-        - CRITICAL: Analyze the mask image carefully. Identify the horizontal divider line that separates the front (top) section from the back (bottom) section. This divider is typically visible as a clear boundary or gap in the mask. Measure its Y coordinate as a percentage (0-100) and set "front_back_divider_y" to this exact value. The front section occupies y=0 to front_back_divider_y, and the back section occupies front_back_divider_y to y=100. This divider position is crucial for aligning the generated texture's composition split.
-        - FOR MULTIPLE IMAGES: Create enough layout_slots to utilize elements from ALL reference images. Each major element (character, prop, logo) from each reference image should have at least one dedicated slot. The synthesis field must explicitly state: "From Image 1, extract [elements] and place them in [slots]. From Image 2, extract [elements] and place them in [slots]." This ensures the generation model knows exactly which elements come from which reference image.
+        
+        CRITICAL: Analyze the mask image carefully. Identify the horizontal divider line that separates the top section from the bottom section. This divider is typically visible as a clear boundary or gap in the mask. Measure its Y coordinate as a percentage (0-100) and set "front_back_divider_y" to this exact value.
         """
 
         contents = [prompt]

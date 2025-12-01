@@ -39,47 +39,32 @@ class PromptComposer(dspy.Module):
         except Exception as e:
             raise ValueError(f"Failed to parse analysis_json: {e}")
         
-        # Resolve reference paths (handle both absolute and relative)
-        abs_refs = []
-        for ref in reference_paths:
-            ref_path = Path(ref)
-            if ref_path.is_absolute():
-                abs_refs.append(str(ref_path.resolve()))
-            else:
-                # Try relative to project root or assets directory
-                candidate = Path('assets') / ref
-                if candidate.exists():
-                    abs_refs.append(str(candidate.resolve()))
-                else:
-                    abs_refs.append(str(Path(ref).resolve()))
+        # Prepare input for the predictor
+        # We want the predictor to generate the INSTRUCTIONS for the image generator
+        # based on the analysis of the images and the layout requirements.
         
-        # Build base prompt parts using GenerationService
-        prompt_parts = self.generator._build_generation_parts(analysis, abs_refs)
-        
-        # Extract text from parts to create base prompt
-        text_parts = []
-        for part in prompt_parts:
-            text = getattr(part, 'text', None)
-            if text:
-                text_parts.append(text)
-        
-        base_prompt_text = "\n\n".join(text_parts)
-        
-        # Use the predictor (GEPA will optimize its instructions)
-        # For now, we use the base prompt, but GEPA can optimize the predictor's behavior
-        # The predictor is present so GEPA can identify and optimize it
-        try:
-            analysis_summary = f"Layout: {len(analysis.layout_slots)} slots, divider at y={analysis.front_back_divider_y}%"
-            result = self.compose_prompt(
-                analysis_summary=analysis_summary,
-                num_references=str(len(abs_refs)),
-                num_slots=str(len(analysis.layout_slots))
+        # Create a summary of the analysis to guide the prompt generation
+        layout_desc = []
+        layout_desc.append(f"Front/Back Divider: y={analysis.front_back_divider_y}%")
+        for slot in analysis.layout_slots:
+            layout_desc.append(
+                f"Slot '{slot.slot_name}': Source Image {slot.source_images}, "
+                f"Pos x={slot.position.x}%, y={slot.position.y}%, "
+                f"Content: {slot.description}"
             )
-            # The predictor output is not used for now - GEPA optimizes its instructions
-            # but we return the base prompt built from GenerationService
-        except Exception:
-            pass
         
-        prompt = base_prompt_text  # Use base prompt from GenerationService
+        analysis_summary = (
+            f"Synthesis Plan: {analysis.synthesis}\n"
+            f"Layout Structure:\n" + "\n".join(layout_desc)
+        )
         
-        return {"prompt": prompt}
+        # Use the predictor to generate the prompt text
+        # GEPA will optimize the signature/instructions of this predictor
+        # to produce better prompts that yield higher scores.
+        pred = self.compose_prompt(
+            analysis_summary=analysis_summary,
+            num_references=str(len(reference_paths)),
+            num_slots=str(len(analysis.layout_slots))
+        )
+        
+        return {"prompt": pred.prompt}

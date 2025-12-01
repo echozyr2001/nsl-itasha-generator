@@ -68,8 +68,10 @@ class GenerationService:
 
         # Example reference pairs (texture prior to masking, rendered preview after mask) to show the desired pipeline
         self.example_pairs = [
-            ("ref/2-b.JPG", "ref/2-a.JPG", "Example pair demonstrating cheerful mascot layout; ref/2-b.JPG is the printable texture, ref/2-a.JPG shows how it appears after applying the mask."),
-            ("ref/8-b.JPG", "ref/8-a.JPG", "Example pair showing chibi characters with soft background; ref/8-b.JPG is the printable texture, ref/8-a.JPG is the masked preview."),
+            ("assets/ref/2-b.JPG", "assets/ref/2-a.JPG", "Example pair demonstrating cheerful mascot layout; 2-b.JPG is the printable texture, 2-a.JPG shows how it appears after applying the mask."),
+            ("assets/ref/8-b.JPG", "assets/ref/8-a.JPG", "Example pair showing chibi characters with soft background; 8-b.JPG is the printable texture, 8-a.JPG is the masked preview."),
+            ("assets/ref/3-b.JPG", "assets/ref/3-a.JPG", "Example pair showing dynamic character placement."),
+            ("assets/ref/4-b.JPG", "assets/ref/4-a.JPG", "Example pair showing balanced composition."),
         ]
 
         # User requested Gemini 3 Pro for the "Control" / Logic part
@@ -124,180 +126,157 @@ class GenerationService:
     def _example_reference_parts(self) -> list:
         parts = []
         parts.append(types.Part.from_text(
-            text="IMPORTANT: Synthesize a new 2D illustration; do not paste or collage the reference textures."
+            text="--- LEARNING FROM EXAMPLES ---\n"
+            "Here are examples of how to convert Source Components into a Final Texture Map.\n"
+            "Observe how the characters are placed to fit the layout, and how the background fills the rest."
         ))
 
         for idx, (texture_path, preview_path, note) in enumerate(self.example_pairs, start=1):
             if not os.path.exists(texture_path):
                 continue
+            
+            # Check for component slots in assets/dspy_inputs
+            try:
+                base_name = os.path.basename(texture_path)
+                ref_id = base_name.split('-')[0]
+                
+                slot_files = []
+                for i in range(3):
+                    slot_path = f"assets/dspy_inputs/{ref_id}-b_slot{i}.png"
+                    if os.path.exists(slot_path):
+                        slot_files.append(slot_path)
+                
+                if slot_files:
+                    parts.append(types.Part.from_text(
+                        text=f"\n=== EXAMPLE {idx} ==="
+                    ))
+                    parts.append(types.Part.from_text(
+                        text="INPUT COMPONENTS (The raw materials):"
+                    ))
+                    for i, slot_path in enumerate(slot_files):
+                        parts.append(self._image_part_from_path(slot_path))
+                    
+                    parts.append(types.Part.from_text(
+                        text="OUTPUT TEXTURE MAP (The result):"
+                    ))
+                    parts.append(self._image_part_from_path(texture_path))
+                    parts.append(types.Part.from_text(
+                        text="Notice how the components are arranged to fill the canvas, with the main characters in the 'White Zones' of the mask."
+                    ))
+                    continue # Skip the standard adding if we did the detailed one
+            except Exception as e:
+                print(f"Error processing slots for example {idx}: {e}")
+
+            # Fallback if no slots found
             parts.append(types.Part.from_text(
                 text=(
-                    f"Example Pair {idx}: '{texture_path}' is the TARGET printable vinyl texture (what you must create)."
+                    f"Example {idx} Target Texture: '{texture_path}'."
                 )
             ))
-            parts.append(types.Part.from_text(
-                text=f"First, observe the TARGET texture '{texture_path}' (flat 2D artwork)."
-            ))
             parts.append(self._image_part_from_path(texture_path))
-            if os.path.exists(preview_path):
-                parts.append(types.Part.from_text(
-                    text=(
-                        f"For context only: '{preview_path}' shows how that texture looks after the mask is applied. "
-                        "Use it solely to understand which zones remain; ignore its hardware outlines when painting."
-                    )
-                ))
-                parts.append(self._image_part_from_path(preview_path))
+
         return parts
 
-    def _build_generation_parts(self, analysis_result: AnalysisResult, reference_images: list[str]) -> list:
+    def _build_generation_parts(self, analysis_result: AnalysisResult, reference_images: list[str], mask_path: str = None) -> list:
         layout_lines = [
-            f"Layout plan derived from structured analysis (percent coords, 0-100):",
-            f"IMPORTANT: Front/Back divider is at y={analysis_result.front_back_divider_y}% (NOT 50%). "
-            f"Front section: y=0% to y={analysis_result.front_back_divider_y}%. Back section: y={analysis_result.front_back_divider_y}% to y=100%."
+            f"LAYOUT PLAN (Follow Coordinates Exactly):",
+            f"DIVIDER LINE: y={analysis_result.front_back_divider_y}% (Top=Front, Bottom=Back)."
         ]
         if analysis_result.layout_slots:
             for slot in analysis_result.layout_slots:
                 layout_lines.append(
-                    f"{slot.slot_name}: x={slot.position.x}, y={slot.position.y}. "
-                    f"Purpose={slot.purpose}. Content={slot.description}. Avoid={slot.avoid}. "
-                    f"Source images={slot.source_images}."
+                    f"- SLOT '{slot.slot_name}': Place content from Image {slot.source_images} at x={slot.position.x}%, y={slot.position.y}%."
                 )
         else:
-            layout_lines.append("No explicit layout slots provided; keep subjects on far left/right for front, emblem on lower back.")
+            layout_lines.append("No explicit slots. Place Image 1 on Left, Image 2 on Right.")
 
         parts = [
             types.Part.from_text(
-                text="You are generating a base texture for a custom skin texture. "
-                "This image must remain unmasked; the user will later overlay the provided mask to cut out screen/buttons. "
-                "Do NOT paint guides, button icons, circular placeholders, or transparent holes. Treat the surface as a full canvas."
+                text="TASK: Generate a 'Vinyl Skin Texture Map' for a handheld console.\n"
+                "OUTPUT FORMAT: A single flat, 2D, square image (1:1 aspect ratio).\n"
+                "STYLE: Anime/Illustration. High quality, seamless composition."
             ),
             types.Part.from_text(
-                text="Render only a flat, front-facing printable vinyl sheet. "
-                "Keep the viewpoint orthographic (straight-on) with no perspective, bevels, shadows, or lighting cues that imply hardware depth. "
-                "Never depict the handheld console device, plastic edges, controllers, or any physical hardware body—only the 2D artwork that will be printed."
+                text="CRITICAL: This is a TEXTURE FILE, not a photograph of a device.\n"
+                "- Do NOT render a 3D object.\n"
+                "- Do NOT render the console casing, buttons, or screen bezels.\n"
+                "- The image should look like a flat sheet of paper with artwork printed on it."
             ),
             types.Part.from_text(
-                text="The final art must look like the provided TARGET OUTPUT examples (2-b.JPG and 8-b.JPG): a continuous illustration across a 1:1 canvas with no hardware outlines, faux shadows, or transparent voids."
+                text="INPUT 1: THE MASK (Geometry Guide)\n"
+                "I will provide a black-and-white/grey mask image.\n"
+                "- WHITE ZONES: These are the 'Safe Areas'. You MUST place the main characters/faces here.\n"
+                "- GREY ZONES: These are 'Bleed/Cut Areas'. Fill these with background colors/patterns. Do NOT put important details here.\n"
+                "- The Mask is a GUIDE. Do not draw the mask itself in the final output. Draw the ARTWORK."
             ),
             types.Part.from_text(
-                text="All placement decisions come from the preceding analysis plan. Follow every layout_slot coordinate precisely. "
-                "If a slot reserves x:[10,25], y:[60,82], ensure the subject fully occupies that rectangle."
-            ),
-            types.Part.from_text(
-                text="The mask's white regions are the only areas that survive after fabrication. Concentrate characters, emblems, and important motifs fully inside those coordinates. Use grey-zone areas solely for low-contrast background gradients that can be safely trimmed away."
-            ),
-            types.Part.from_text(
-                text="Do NOT hint at the mask outline: avoid blurred borders, ghosted rectangles, semi-transparent overlays, or softened screen silhouettes. Keep color and detail consistent across cut-line boundaries so the texture looks pristine before masking."
-            ),
-            types.Part.from_text(
-                text=f"CRITICAL DIVIDER ALIGNMENT: The front (top) and back (bottom) sections are divided at y={analysis_result.front_back_divider_y}% (not at 50%). "
-                f"The front section occupies y=0% to y={analysis_result.front_back_divider_y}%, and the back section occupies y={analysis_result.front_back_divider_y}% to y=100%. "
-                f"You MUST align your composition split exactly at this y={analysis_result.front_back_divider_y}% coordinate. "
-                f"The front section should appear busier and more character-rich than the back section. Extend design elements all the way into the front-left and front-right corners so no blank wedges remain."
-            ),
-            types.Part.from_text(
-                text="Forbidden zones: Top-front screen area (x=25%-75%, y=18%-50%) and controller holes must contain only background gradients. Keep all faces and focal elements outside those bounds."
+                text="INPUT 2: SOURCE IMAGES (The Content)\n"
+                "I will provide reference images containing characters.\n"
+                "- You must EXTRACT the main character from each source image.\n"
+                "- You must PLACE that character into the specific 'White Zone' defined in the Layout Plan.\n"
+                "- Do not change the character's design. Copy it as faithfully as possible."
             ),
             types.Part.from_text(text="\n".join(layout_lines)),
             types.Part.from_text(text=self._analysis_summary_text(analysis_result)),
         ]
         
-        # Add explicit multi-image combination guidance
-        if len(reference_images) > 1:
+        # Attach template mask
+        current_mask_path = mask_path if mask_path else self.template_mask_path
+        if current_mask_path and os.path.exists(current_mask_path):
             parts.append(types.Part.from_text(
-                text=f"CRITICAL MULTI-IMAGE INSTRUCTION: You have received {len(reference_images)} reference images. "
-                f"The 'Synthesis' section above explains HOW to combine elements from all images. "
-                f"The 'Layout Slots' section specifies EXACTLY which elements from which reference image go into which position. "
-                f"You MUST follow this plan precisely: "
-                f"1. Read each layout slot's 'Source images' field to know which reference image(s) to use for that slot. "
-                f"2. Extract ONLY the elements described in that slot's 'Content' field from the specified reference image(s). "
-                f"3. Place those elements at the exact coordinates given in the slot's 'Position' field. "
-                f"4. Maintain visual consistency: if the same character appears in multiple slots, ensure it looks identical across all instances. "
-                f"5. DO NOT simply copy one reference image or blend them randomly—create a unified composition by following the layout plan exactly."
-            ))
-
-        # Attach template mask to give spatial context
-        if self.template_mask_path:
-            parts.append(types.Part.from_text(
-                text="Template mask placement aid ONLY: white = survives after cutting, grey = will be removed. "
-                "Use it solely to position characters and patterns. Do not copy its shapes, colors, or transparency into the final artwork."
+                text="HERE IS THE MASK (Geometry Guide):"
             ))
             try:
-                parts.append(self._image_part_from_path(self.template_mask_path))
+                parts.append(self._image_part_from_path(current_mask_path))
             except Exception as mask_err:
-                print(f"Warning: Failed to load template mask ({self.template_mask_path}): {mask_err}")
+                print(f"Warning: Failed to load template mask: {mask_err}")
 
-        # Attach example pairs for few-shot guidance
+        # Attach example pairs
         parts.extend(self._example_reference_parts())
 
-        # Add a summary of which elements should come from which image
-        if len(reference_images) > 1:
-            slot_to_image_map = {}
-            if analysis_result.layout_slots:
-                for slot in analysis_result.layout_slots:
-                    for img_idx in slot.source_images:
-                        if img_idx not in slot_to_image_map:
-                            slot_to_image_map[img_idx] = []
-                        slot_to_image_map[img_idx].append(slot.slot_name)
-            
-            if slot_to_image_map:
-                mapping_text = "Element-to-Image Mapping (follow this exactly):\n"
-                for img_idx, slots in slot_to_image_map.items():
-                    if img_idx <= len(reference_images):
-                        mapping_text += f"  - Reference Image {img_idx}: Use elements in slots {', '.join(slots)}\n"
-                parts.append(types.Part.from_text(text=mapping_text))
+        parts.append(types.Part.from_text(
+            text="NOW, GENERATE THE TEXTURE FOR THE FOLLOWING INPUTS:"
+        ))
         
         for idx, img_path in enumerate(reference_images):
             try:
                 img_part = self._image_part_from_path(img_path)
             except Exception as e:
-                print(f"Warning: Failed to load reference image {img_path} for generation: {e}")
                 continue
-            description = analysis_result.images[idx].description if idx < len(analysis_result.images) else "User reference."
-            
-            # Find which slots use this image
-            relevant_slots = []
-            if analysis_result.layout_slots:
-                for slot in analysis_result.layout_slots:
-                    if (idx + 1) in slot.source_images:  # source_images is 1-based
-                        relevant_slots.append(f"{slot.slot_name} ({slot.description})")
-            
-            slot_info = f" This image's elements should be used in: {', '.join(relevant_slots)}" if relevant_slots else ""
             
             parts.append(types.Part.from_text(
                 text=(
-                    f"Reference Image {idx+1}: '{img_path}'.{slot_info} "
-                    f"Maintain its characters, outfits, color palette, and key motifs exactly—only reposition and restyle them per the layout plan. "
-                    f"Preserve identifiable features (faces, clothing, props) exactly as shown in this source image."
+                    f"SOURCE IMAGE {idx+1}:"
                 )
             ))
-            parts.append(types.Part.from_text(text=description))
             parts.append(img_part)
 
-        parts.append(types.Part.from_text(
-            text="REMINDER: Output a clean, guide-free base texture. Do not overlay the mask yourself."
-        ))
-        parts.append(types.Part.from_text(
-            text="Final deliverable must be a seamless 1:1 canvas with zero transparent pixels and no visible hardware edges—only artwork ready for printing."
-        ))
-        parts.append(types.Part.from_text(
-            text="Fill every region (including the future cut-out zones) with cohesive background gradients or patterns so that when the user applies the mask, only the white regions remain."
-        ))
-        parts.append(types.Part.from_text(
-            text="Reject any impulse to outline the device frame, screen bezel, controls, D-pad, or buttons. Those shapes should only emerge later when the user applies the mask."
-        ))
-        parts.append(types.Part.from_text(
-            text="Double-check the analysis layout: if a slot sits in the top half's white grip region, keep the center screen zone minimal. If a slot targets the back (lower half), fill that area generously so the final product feels rich after masking."
-        ))
-        parts.append(types.Part.from_text(
-            text="Ensure the top half background remains a clean gradient or pattern with no boxed blur mirroring the screen area—treat it as uninterrupted art."
-        ))
-        parts.append(types.Part.from_text(
-            text="Reinforce the front-left and front-right corners with motifs, gradients, or supporting elements so they do not look empty after masking."
-        ))
+        # Load optimized instructions if available
+        instructions_text = (
+            "INSTRUCTIONS:\n"
+            "1. Look at Source Image 1. Extract the character.\n"
+            "2. Look at the Layout Plan. Find where Source Image 1 goes.\n"
+            "3. Paint that character into that position on the canvas.\n"
+            "4. Repeat for all source images.\n"
+            "5. Fill the rest of the canvas (especially the Grey Zones of the mask) with a matching background pattern.\n"
+            "6. OUTPUT: The final flat texture map."
+        )
+        
+        optimized_instructions_path = "assets/optimized_instructions.txt"
+        if os.path.exists(optimized_instructions_path):
+            try:
+                with open(optimized_instructions_path, 'r') as f:
+                    custom_instructions = f.read().strip()
+                if custom_instructions:
+                    print(f"Using optimized instructions from {optimized_instructions_path}")
+                    instructions_text = custom_instructions
+            except Exception as e:
+                print(f"Failed to load optimized instructions: {e}")
+
+        parts.append(types.Part.from_text(text=instructions_text))
         return parts
 
-    def generate_image(self, analysis_result: AnalysisResult, reference_images: list[str], output_path: str):
+    def generate_image(self, analysis_result: AnalysisResult, reference_images: list[str], output_path: str, mask_path: str = None):
         """
         Generates the actual image using the requested model based on the prompt and reference images.
         Uses generate_content with response_modalities=["IMAGE"].
@@ -306,7 +285,7 @@ class GenerationService:
             # For Gemini 3 Pro Texture Generator, we use generate_content
             # asking for an image response modality.
             
-            parts = self._build_generation_parts(analysis_result, reference_images)
+            parts = self._build_generation_parts(analysis_result, reference_images, mask_path=mask_path)
 
             print(f"Sending prompt and {len(reference_images)} reference images to Image Model ({self.image_model})...")
             
