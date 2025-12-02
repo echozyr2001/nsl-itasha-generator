@@ -1,13 +1,14 @@
 import os
 import sys
 import argparse
+
+# Add the project root to python path before importing from src
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from dotenv import load_dotenv
 from src.services.vision import VisionService
 from src.services.generation import GenerationService
 from src.utils.image_ops import overlay_template
-
-# Add the project root to python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 def main():
     parser = argparse.ArgumentParser(description="Nintendo Switch Lite Itasha Generator")

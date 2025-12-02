@@ -93,6 +93,9 @@ class GenerationService:
 
     def _analysis_summary_text(self, analysis_result: AnalysisResult) -> str:
         lines = ["=== STRUCTURED ANALYSIS ==="]
+        palette = []
+        style_set = []
+        mood_set = []
         for idx, img in enumerate(analysis_result.images):
             lines.append(f"\nImage {idx+1}:")
             lines.append(f"  Description: {img.description}")
@@ -100,25 +103,40 @@ class GenerationService:
             lines.append(f"  Style: {img.style}")
             lines.append(f"  Colors: {', '.join(img.colors)}")
             lines.append(f"  Mood: {img.mood}")
+            palette.extend([c for c in img.colors if c])
+            if img.style and img.style not in style_set:
+                style_set.append(img.style)
+            if img.mood and img.mood not in mood_set:
+                mood_set.append(img.mood)
         
-        lines.append(f"\n=== SYNTHESIS (CRITICAL: How to combine all images) ===")
+        lines.append(f"\n=== SYNTHESIS PLAN ===")
         lines.append(f"{analysis_result.synthesis}")
-        lines.append(f"\n=== CANVAS STRUCTURE ===")
-        lines.append(f"Front/Back Divider: y={analysis_result.front_back_divider_y}% (front: 0-{analysis_result.front_back_divider_y}%, back: {analysis_result.front_back_divider_y}-100%)")
+        
+        lines.append(f"\nLayout Structure:")
+        lines.append(f"Front/Back Divider: y={analysis_result.front_back_divider_y}%")
+
+        if palette:
+            unique_palette = []
+            for color in palette:
+                if color not in unique_palette:
+                    unique_palette.append(color)
+            lines.append("Global Palette Seeds: " + ", ".join(unique_palette[:8]))
+        if style_set or mood_set:
+            cohesion_bits = []
+            if style_set:
+                cohesion_bits.append("Styles to blend: " + ", ".join(style_set))
+            if mood_set:
+                cohesion_bits.append("Mood targets: " + ", ".join(mood_set))
+            lines.append("Cohesion Goals: " + " | ".join(cohesion_bits))
         
         if analysis_result.layout_slots:
-            lines.append(f"\n=== LAYOUT SLOTS (exact placement plan) ===")
             for slot in analysis_result.layout_slots:
                 lines.append(
-                    f"\n{slot.slot_name}:"
+                    f"Slot '{slot.slot_name}': Source Image [{slot.source_images}], "
+                    f"Pos x=[{slot.position.x}]%, y=[{slot.position.y}]%, "
+                    f"Content: {slot.description}"
                 )
-                lines.append(f"  Source images: {slot.source_images} (use elements from these reference images)")
-                lines.append(f"  Position: x={slot.position.x}%, y={slot.position.y}%")
-                lines.append(f"  Content: {slot.description}")
-                lines.append(f"  Purpose: {slot.purpose}")
-                lines.append(f"  Avoid: {slot.avoid}")
         else:
-            lines.append("\n=== LAYOUT SLOTS ===")
             lines.append("No explicit layout slots provided; keep subjects on far left/right for front, emblem on lower back.")
         
         return "\n".join(lines)
@@ -180,7 +198,7 @@ class GenerationService:
     def _build_generation_parts(self, analysis_result: AnalysisResult, reference_images: list[str], mask_path: str = None) -> list:
         layout_lines = [
             f"LAYOUT PLAN (Follow Coordinates Exactly):",
-            f"DIVIDER LINE: y={analysis_result.front_back_divider_y}% (Top=Front, Bottom=Back)."
+            f"CONCEPTUAL DIVIDER (Do NOT draw this line): y={analysis_result.front_back_divider_y}% (Top=Front, Bottom=Back)."
         ]
         if analysis_result.layout_slots:
             for slot in analysis_result.layout_slots:
@@ -200,8 +218,22 @@ class GenerationService:
                 text="CRITICAL: This is a TEXTURE FILE, not a photograph of a device.\n"
                 "- Do NOT render a 3D object.\n"
                 "- Do NOT render the console casing, buttons, or screen bezels.\n"
+                "- Do NOT draw any guidelines, grid lines, or divider lines.\n"
                 "- The image should look like a flat sheet of paper with artwork printed on it."
             ),
+                types.Part.from_text(
+                    text="PROHIBITED CONTENT:\n"
+                    "- Never write text such as 'Switch', 'Lite', 'Switchlite', or any hardware logos.\n"
+                    "- Do not draw hardware silhouettes, button labels, or helper guide lines.\n"
+                    "- The canvas must look like finished art without technical markings."
+                ),
+                types.Part.from_text(
+                    text="COHESION PROTOCOL:\n"
+                    "- Treat all source images as belonging to the same illustration.\n"
+                    "- Normalize lighting, rendering quality, and brushwork so no character looks cut-out.\n"
+                    "- Use the shared palette from the analysis summary to create a single gradient or pattern that spans the entire canvas (top+bottom).\n"
+                    "- If colors clash, gently recolor accessories/backgrounds while preserving character identity."
+                ),
             types.Part.from_text(
                 text="INPUT 1: THE MASK (Geometry Guide)\n"
                 "I will provide a black-and-white/grey mask image.\n"
