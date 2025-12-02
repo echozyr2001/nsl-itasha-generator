@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import sys
+import os
+import random
+from copy import deepcopy
 from pathlib import Path
 
 import dspy
@@ -13,16 +16,72 @@ from src.prompt_optim.dspy_config import configure_dspy
 
 DATASET_PATH = Path("datasets/gepa_dataset.json")
 OUTPUT_PATH = Path("datasets/gepa_optimized_prompt.txt")
+MAX_TRAINSET_SIZE = int(os.getenv("GEPA_MAX_TRAINSET", "12"))
 
 
-def load_dataset():
-    """Load the GEPA training dataset."""
+def load_dataset(include_mixed: bool = True):
+    """Load the GEPA training dataset and optionally add interleaved examples."""
     if not DATASET_PATH.exists():
         raise FileNotFoundError(f"Dataset not found at {DATASET_PATH}")
-    return json.loads(DATASET_PATH.read_text())
+    dataset = json.loads(DATASET_PATH.read_text())
+    if include_mixed and dataset:
+        mixed = build_interleaved_examples(dataset)
+        if mixed:
+            print(f"Augmenting dataset with {len(mixed)} mixed-reference examples")
+            dataset = dataset + mixed
+    return dataset
 
 
-def create_gepa_metric():
+def build_interleaved_examples(dataset: list[dict]) -> list[dict]:
+    """Generate synthetic examples that mix references from different base textures."""
+    slot0_refs = [ex["references"][0] for ex in dataset if len(ex.get("references", [])) > 0]
+    slot1_refs = [ex["references"][1] for ex in dataset if len(ex.get("references", [])) > 1]
+    slot2_refs = [ex["references"][2] for ex in dataset if len(ex.get("references", [])) > 2]
+
+    if not (slot0_refs and slot1_refs and slot2_refs):
+        return []
+
+    len0, len1, len2 = len(slot0_refs), len(slot1_refs), len(slot2_refs)
+    shift1 = max(1, len1 // 2)
+    shift2 = max(1, len2 // 3)
+
+    mixed_examples: list[dict] = []
+    for idx, base in enumerate(dataset):
+        ref0 = slot0_refs[idx % len0]
+        ref1 = slot1_refs[(idx + shift1) % len1]
+        ref2 = slot2_refs[(idx + shift2) % len2]
+
+        if len({ref0, ref1, ref2}) < 3:
+            continue  # skip combos that accidentally reuse same image
+
+        analysis_copy = deepcopy(base["analysis"])
+        update_image_descriptor(analysis_copy, 0, ref0)
+        update_image_descriptor(analysis_copy, 1, ref1)
+        update_image_descriptor(analysis_copy, 2, ref2)
+
+        mixed_examples.append(
+            {
+                "texture": base.get("texture"),
+                "analysis": analysis_copy,
+                "references": [ref0, ref1, ref2],
+            }
+        )
+
+    return mixed_examples
+
+
+def update_image_descriptor(analysis: dict, image_idx: int, ref_path: str) -> None:
+    """Update analysis metadata to describe the new reference source."""
+    images = analysis.get("images", [])
+    if image_idx >= len(images):
+        return
+    descriptor = images[image_idx]
+    descriptor["description"] = f"Use primary character from {ref_path}"
+    descriptor["style"] = "Match original art style"
+    descriptor["mood"] = "Preserve emotional tone"
+
+
+def create_gepa_metric(dataset: list[dict]):
     """
     Create a GEPA metric function that generates images and evaluates them.
     Returns a function that conforms to GEPA's metric signature.
@@ -87,22 +146,19 @@ def create_gepa_metric():
                         abs_refs.append(str(Path(ref).resolve()))
             
             # Get target texture path from dataset if available
-            # Load dataset to find target texture
+            # Find matching texture in dataset
             target_texture = None
-            try:
-                dataset = load_dataset()
-                for ex in dataset:
-                    if ex.get("references") == reference_paths or ex.get("references") == abs_refs:
-                        target_texture = ex.get("texture")
-                        if target_texture:
-                            target_path = Path("assets") / target_texture if not Path(target_texture).is_absolute() else Path(target_texture)
-                            if target_path.exists():
-                                target_texture = str(target_path)
-                            else:
-                                target_texture = None
-                        break
-            except:
-                pass  # Ignore errors in finding target texture
+            for ex in dataset:
+                refs = ex.get("references", [])
+                if refs == reference_paths or refs == abs_refs:
+                    target_texture = ex.get("texture")
+                    break
+            if target_texture:
+                target_path = Path("assets") / target_texture if not Path(target_texture).is_absolute() else Path(target_texture)
+                if target_path.exists():
+                    target_texture = str(target_path)
+                else:
+                    target_texture = None
             
             # Generate image and evaluate it
             evaluator = get_evaluator()
@@ -152,7 +208,17 @@ def main():
     # Load dataset and convert to DSPy Examples
     print(f"Loading dataset from {DATASET_PATH}...")
     dataset_raw = load_dataset()
-    print(f"Loaded {len(dataset_raw)} examples")
+    print(f"Loaded {len(dataset_raw)} total examples (including mixed variants)")
+
+    # Reduce evaluation subset to stabilize long GEPA runs
+    selected_dataset = dataset_raw
+    if MAX_TRAINSET_SIZE and len(dataset_raw) > MAX_TRAINSET_SIZE:
+        random.seed(42)
+        chosen_indices = sorted(random.sample(range(len(dataset_raw)), MAX_TRAINSET_SIZE))
+        selected_dataset = [dataset_raw[i] for i in chosen_indices]
+        print(f"Using {len(selected_dataset)} examples for GEPA (subset of full dataset)")
+    else:
+        print("Using full dataset for GEPA")
     
     # Convert to DSPy Examples
     trainset = [
@@ -160,7 +226,7 @@ def main():
             analysis_json=json.dumps(ex["analysis"]),
             reference_paths=ex["references"],
         ).with_inputs("analysis_json", "reference_paths")
-        for ex in dataset_raw
+        for ex in selected_dataset
     ]
     
     # Create initial program
@@ -178,7 +244,7 @@ def main():
     print(f"Initial prompt score: {initial_score:.3f}")
     
     # Create metric function
-    metric_fn = create_gepa_metric()
+    metric_fn = create_gepa_metric(selected_dataset)
     
     # Run GEPA optimization
     print("\nRunning GEPA optimization...")
@@ -189,7 +255,7 @@ def main():
     optimizer = dspy.GEPA(
         metric=metric_fn,
         reflection_lm=reflection_lm,  # Required: LM for reflection and instruction proposal
-        max_metric_calls=30,  # Limit metric calls (each generates an image, so limit total images)
+        max_metric_calls=24,  # Slightly lower budget to reduce long blocking calls
         skip_perfect_score=False,  # Allow optimization even if initial score is high
     )
     

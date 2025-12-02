@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from io import BytesIO
 
@@ -113,30 +114,38 @@ class ImageEvaluator:
                     print(f"Warning: Failed to load reference image {img_path}: {e}", file=sys.stderr)
         
         # Generate image
-        try:
-            response = self.generator.client.models.generate_content(
-                model=self.generator.image_model,
-                contents=[types.Content(role="user", parts=parts)],
-                config=types.GenerateContentConfig(
-                    response_modalities=[types.Modality.IMAGE],
-                    image_config=types.ImageConfig(aspect_ratio="1:1")
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = self.generator.client.models.generate_content(
+                    model=self.generator.image_model,
+                    contents=[types.Content(role="user", parts=parts)],
+                    config=types.GenerateContentConfig(
+                        response_modalities=[types.Modality.IMAGE],
+                        image_config=types.ImageConfig(aspect_ratio="1:1")
+                    )
                 )
-            )
-            
-            # Extract image from response
-            if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
-                for part in response.candidates[0].content.parts:
-                    if part.inline_data:
-                        img_data = part.inline_data.data
-                        img = Image.open(BytesIO(img_data))
-                        img.save(output_path)
-                        return output_path
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error generating image with custom prompt: {e}", file=sys.stderr)
-            return None
+                
+                # Extract image from response
+                if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.inline_data:
+                            img_data = part.inline_data.data
+                            img = Image.open(BytesIO(img_data))
+                            img.save(output_path)
+                            return output_path
+                
+                print("Warning: No inline image data returned from model", file=sys.stderr)
+                if attempt < max_attempts:
+                    time.sleep(2 * attempt)
+                    continue
+            except Exception as e:
+                print(f"Error generating image with custom prompt (attempt {attempt}/{max_attempts}): {e}", file=sys.stderr)
+                if attempt < max_attempts:
+                    time.sleep(2 * attempt)
+                    continue
+                return None
+        return None
     
     def generate_and_evaluate(
         self,
@@ -256,27 +265,36 @@ Return your response as JSON with the following structure:
             parts.append(self._image_part_from_bytes(target_bytes))
         
         # Call scoring model
-        try:
-            response = self.scoring_client.models.generate_content(
-                model=self.scoring_model,
-                contents=[types.Content(role="user", parts=parts)],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = self.scoring_client.models.generate_content(
+                    model=self.scoring_model,
+                    contents=[types.Content(role="user", parts=parts)],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
                 )
-            )
-            
-            # Extract JSON response
-            if response.candidates and response.candidates[0].content:
-                text = response.candidates[0].content.parts[0].text
-                result = json.loads(text)
                 
-                score = float(result.get("score", 0.0))
-                feedback = result.get("feedback", "No feedback provided")
-                
-                return score, feedback
-            else:
-                return 0.0, "No response from scoring model"
-                
-        except Exception as e:
-            return 0.0, f"Error in scoring: {str(e)}"
+                # Extract JSON response
+                if response.candidates and response.candidates[0].content:
+                    text = response.candidates[0].content.parts[0].text
+                    result = json.loads(text)
+                    
+                    score = float(result.get("score", 0.0))
+                    feedback = result.get("feedback", "No feedback provided")
+                    
+                    return score, feedback
+                else:
+                    print("Warning: No scoring response candidates", file=sys.stderr)
+                    if attempt < max_attempts:
+                        time.sleep(2 * attempt)
+                        continue
+            except Exception as e:
+                print(f"Error in scoring attempt {attempt}/{max_attempts}: {e}", file=sys.stderr)
+                if attempt < max_attempts:
+                    time.sleep(2 * attempt)
+                    continue
+                return 0.0, f"Error in scoring: {str(e)}"
+        return 0.0, "No response from scoring model"
 
