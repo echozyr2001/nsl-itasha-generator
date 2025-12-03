@@ -141,6 +141,24 @@ class GenerationService:
         
         return "\n".join(lines)
 
+    def _layout_structure_text(self, analysis_result: AnalysisResult) -> str:
+        """Return layout text matching the optimized GEPA prompt format."""
+        lines = ["Layout Structure:"]
+        lines.append(f"Front/Back Divider: y={analysis_result.front_back_divider_y}%")
+        if analysis_result.layout_slots:
+            for slot in analysis_result.layout_slots:
+                slot_desc = slot.description.lower()
+                character_constraint = ""
+                if any(keyword in slot_desc for keyword in ["character", "hero", "figure", "person"]):
+                    character_constraint = " Ensure the full character remains intact (no cropped limbs or floating props)."
+                lines.append(
+                    f"Slot '{slot.slot_name}': Source Image [{slot.source_images}], "
+                    f"Pos x=[{slot.position.x}]%, y=[{slot.position.y}]%, Content: {slot.description}{character_constraint}"
+                )
+        else:
+            lines.append("No explicit slots provided; distribute subjects evenly across front/back areas.")
+        return "\n".join(lines)
+
     def _example_reference_parts(self) -> list:
         parts = []
         parts.append(types.Part.from_text(
@@ -223,7 +241,7 @@ class GenerationService:
             ),
                 types.Part.from_text(
                     text="PROHIBITED CONTENT:\n"
-                    "- Never write text such as 'Switch', 'Lite', 'Switchlite', or any hardware logos.\n"
+                    "- Never write device names, logos, or branded text.\n"
                     "- Do not draw hardware silhouettes, button labels, or helper guide lines.\n"
                     "- The canvas must look like finished art without technical markings."
                 ),
@@ -284,26 +302,40 @@ class GenerationService:
             parts.append(img_part)
 
         # Load optimized instructions if available
-        instructions_text = (
-            "INSTRUCTIONS:\n"
-            "1. Look at Source Image 1. Extract the character.\n"
-            "2. Look at the Layout Plan. Find where Source Image 1 goes.\n"
-            "3. Paint that character into that position on the canvas.\n"
-            "4. Repeat for all source images.\n"
-            "5. Fill the rest of the canvas (especially the Grey Zones of the mask) with a matching background pattern.\n"
-            "6. OUTPUT: The final flat texture map."
+        default_template = (
+            "I have a synthesis plan to combine reference crops using predefined layout slots. "
+            "There are a total of {num_references} references and {num_slots} slots.\n\n"
+            "{layout_structure}\n\n"
+            "Can you generate an image based on this plan?"
         )
-        
+
+        instructions_template = default_template
         optimized_instructions_path = "assets/optimized_instructions.txt"
         if os.path.exists(optimized_instructions_path):
             try:
                 with open(optimized_instructions_path, 'r') as f:
-                    custom_instructions = f.read().strip()
-                if custom_instructions:
+                    custom_template = f.read().strip()
+                if custom_template:
                     print(f"Using optimized instructions from {optimized_instructions_path}")
-                    instructions_text = custom_instructions
+                    instructions_template = custom_template
             except Exception as e:
                 print(f"Failed to load optimized instructions: {e}")
+
+        num_slots = len(analysis_result.layout_slots)
+        layout_structure_text = self._layout_structure_text(analysis_result)
+        try:
+            instructions_text = instructions_template.format(
+                num_references=len(reference_images),
+                num_slots=num_slots,
+                layout_structure=layout_structure_text
+            )
+        except KeyError as e:
+            print(f"Instruction template missing placeholder {e}; falling back to default", file=sys.stderr)
+            instructions_text = default_template.format(
+                num_references=len(reference_images),
+                num_slots=num_slots,
+                layout_structure=layout_structure_text
+            )
 
         parts.append(types.Part.from_text(text=instructions_text))
         return parts

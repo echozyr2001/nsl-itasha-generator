@@ -17,6 +17,7 @@ from src.prompt_optim.dspy_config import configure_dspy
 DATASET_PATH = Path("datasets/gepa_dataset.json")
 OUTPUT_PATH = Path("datasets/gepa_optimized_prompt.txt")
 MAX_TRAINSET_SIZE = int(os.getenv("GEPA_MAX_TRAINSET", "12"))
+VALSET_SIZE = int(os.getenv("GEPA_VALSET_SIZE", "6"))
 
 
 def load_dataset(include_mixed: bool = True):
@@ -220,14 +221,39 @@ def main():
     else:
         print("Using full dataset for GEPA")
     
+    # Split into train/val to avoid evaluating on the full set every rollout
+    random.seed(1234)
+    valset_count = 0
+    valset_examples_raw: list[dict] = []
+    trainset_examples_raw: list[dict] = []
+    if VALSET_SIZE > 0 and len(selected_dataset) > 1:
+        valset_count = min(VALSET_SIZE, max(1, len(selected_dataset) // 3))
+        val_indices = set(random.sample(range(len(selected_dataset)), valset_count))
+        for idx, ex in enumerate(selected_dataset):
+            (valset_examples_raw if idx in val_indices else trainset_examples_raw).append(ex)
+    else:
+        trainset_examples_raw = selected_dataset
+    if not trainset_examples_raw:
+        trainset_examples_raw, valset_examples_raw = valset_examples_raw, []
+
+    print(f"Trainset size: {len(trainset_examples_raw)}, Valset size: {len(valset_examples_raw)}")
+
     # Convert to DSPy Examples
     trainset = [
         dspy.Example(
             analysis_json=json.dumps(ex["analysis"]),
             reference_paths=ex["references"],
         ).with_inputs("analysis_json", "reference_paths")
-        for ex in selected_dataset
+        for ex in trainset_examples_raw
     ]
+
+    valset = [
+        dspy.Example(
+            analysis_json=json.dumps(ex["analysis"]),
+            reference_paths=ex["references"],
+        ).with_inputs("analysis_json", "reference_paths")
+        for ex in valset_examples_raw
+    ] if valset_examples_raw else None
     
     # Create initial program
     print("Initializing PromptComposer...")
@@ -263,6 +289,7 @@ def main():
         optimized = optimizer.compile(
             student=program,
             trainset=trainset,
+            valset=valset,
         )
         
         # Test optimized program

@@ -225,7 +225,7 @@ class ImageEvaluator:
         """
         # Build scoring prompt
         scoring_prompt = """
-You are evaluating a generated texture image for a Nintendo Switch Lite skin design.
+    You are evaluating a generated texture image for a handheld console skin design.
 
 Evaluation Criteria:
 1. **Layout Compliance** (30%): Does the image follow the specified layout slots and avoid forbidden zones (screen, buttons)?

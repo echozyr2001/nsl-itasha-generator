@@ -11,11 +11,11 @@ from src.services.generation import GenerationService
 from src.utils.image_ops import overlay_template
 
 def main():
-    parser = argparse.ArgumentParser(description="Nintendo Switch Lite Itasha Generator")
+    parser = argparse.ArgumentParser(description="Handheld Console Skin Generator")
     parser.add_argument("image_paths", nargs='+', help="Path(s) to the input image(s) (element/style reference)")
     parser.add_argument("--mask", default="assets/cover.png", help="Path to the mask image (white=printable, grey=cutout)")
     parser.add_argument("--output", default="assets/output/result.png", help="Path to save the generated base texture (no mask applied)")
-    parser.add_argument("--preview-output", help="Optional path to save a preview with the Switch Lite mask applied")
+    parser.add_argument("--preview-output", help="Optional path to save a preview with the mask applied")
     
     args = parser.parse_args()
     
